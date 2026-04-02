@@ -536,3 +536,355 @@ serviceRouter.get('/business/:place_id', async (c) => {
     return c.json({ error: 'Business details fetch failed', message: err?.message || String(err) }, 502);
   }
 });
+
+// ═══════════════════════════════════════════════════════
+// ─── GOOGLE DISCOVER FEED API (Bounty #52) ─────────
+// ═══════════════════════════════════════════════════════
+
+const DISCOVER_PRICE_USDC = 0.01;
+const DISCOVER_WALLET = '6eUdVwsPArTxwVqEARYGCh4S2qwW2zCs7jSEDRpxydnv';
+
+serviceRouter.get('/discover/run', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/discover/run',
+      'Google Discover Feed Intelligence — captures mobile Discover feed content from real carrier IPs',
+      DISCOVER_PRICE_USDC, DISCOVER_WALLET, {
+        input: { country: 'string (default US)', category: 'string (default news)' },
+        output: '{ country, category, timestamp, discover_feed: Article[], metadata }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, DISCOVER_WALLET, DISCOVER_PRICE_USDC);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const country = c.req.query('country') || 'US';
+  const category = c.req.query('category') || 'news';
+
+  try {
+    const { scrapeDiscoverFeed } = await import('./scrapers/discover-scraper');
+    const result = await scrapeDiscoverFeed(country, category);
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json({
+      ...result,
+      payment: { txHash: payment.txHash, network: payment.network, amount: verification.amount, settled: true },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Discover feed scrape failed', message: err?.message || String(err) }, 502);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ─── AMAZON PRODUCT API (Bounty #72) ─────────────────
+// ═══════════════════════════════════════════════════════
+
+const AMAZON_PRODUCT_PRICE = 0.005;
+const AMAZON_SEARCH_PRICE = 0.01;
+const AMAZON_REVIEWS_PRICE = 0.02;
+const AMAZON_WALLET = '6eUdVwsPArTxwVqEARYGCh4S2qwW2zCs7jSEDRpxydnv';
+
+serviceRouter.get('/amazon/product/:asin', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/amazon/product/:asin',
+      'Amazon Product Intelligence — price, BSR, reviews, buy box by ASIN',
+      AMAZON_PRODUCT_PRICE, AMAZON_WALLET, {
+        input: { asin: 'string (required)', marketplace: 'string (default US)' },
+        output: '{ asin, title, price, bsr, rating, reviews_count, buy_box, availability }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, AMAZON_WALLET, AMAZON_PRODUCT_PRICE);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const asin = c.req.param('asin');
+  const marketplace = c.req.query('marketplace') || 'US';
+
+  if (!asin) return c.json({ error: 'Missing ASIN parameter' }, 400);
+
+  try {
+    const { scrapeAmazonProduct } = await import('./scrapers/amazon-scraper');
+    const result = await scrapeAmazonProduct(asin, marketplace);
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json({
+      ...result,
+      payment: { txHash: payment.txHash, network: payment.network, amount: verification.amount, settled: true },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Amazon product scrape failed', message: err?.message || String(err) }, 502);
+  }
+});
+
+serviceRouter.get('/amazon/search', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/amazon/search',
+      'Amazon Product Search — search products by keyword with pricing and BSR',
+      AMAZON_SEARCH_PRICE, AMAZON_WALLET, {
+        input: { query: 'string (required)', marketplace: 'string (default US)', limit: 'number (default 20)' },
+        output: '{ results: AmazonSearchResult[], meta }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, AMAZON_WALLET, AMAZON_SEARCH_PRICE);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const query = c.req.query('query');
+  if (!query) return c.json({ error: 'Missing required parameter: query' }, 400);
+
+  const marketplace = c.req.query('marketplace') || 'US';
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '20') || 20, 1), 50);
+
+  try {
+    const { searchAmazonProducts } = await import('./scrapers/amazon-scraper');
+    const results = await searchAmazonProducts(query, marketplace, limit);
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json({
+      results,
+      meta: { query, marketplace, limit, total: results.length },
+      payment: { txHash: payment.txHash, network: payment.network, amount: verification.amount, settled: true },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Amazon search failed', message: err?.message || String(err) }, 502);
+  }
+});
+
+serviceRouter.get('/amazon/reviews/:asin', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/amazon/reviews/:asin',
+      'Amazon Product Reviews — top/recent reviews with ratings and verified purchase badges',
+      AMAZON_REVIEWS_PRICE, AMAZON_WALLET, {
+        input: { asin: 'string (URL path)', sort: '"recent"|"helpful"|"top" (default recent)', limit: 'number (default 10)' },
+        output: '{ asin, reviews: AmazonReviewsResult[] }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, AMAZON_WALLET, AMAZON_REVIEWS_PRICE);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const asin = c.req.param('asin');
+  const sort = c.req.query('sort') || 'recent';
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '10') || 10, 1), 50);
+
+  try {
+    const { scrapeAmazonReviews } = await import('./scrapers/amazon-scraper');
+    const reviews = await scrapeAmazonReviews(asin, sort, limit);
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json({
+      asin,
+      reviews,
+      meta: { sort, limit, total: reviews.length },
+      payment: { txHash: payment.txHash, network: payment.network, amount: verification.amount, settled: true },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Amazon reviews fetch failed', message: err?.message || String(err) }, 502);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ─── FACEBOOK MARKETPLACE API (Bounty #75) ───────────
+// ═══════════════════════════════════════════════════════
+
+const MARKETPLACE_SEARCH_PRICE = 0.01;
+const MARKETPLACE_DETAIL_PRICE = 0.005;
+const MARKETPLACE_WALLET = '6eUdVwsPArTxwVqEARYGCh4S2qwW2zCs7jSEDRpxydnv';
+
+serviceRouter.get('/marketplace/search', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/marketplace/search',
+      'Facebook Marketplace Search — listings by keyword, location, price range',
+      MARKETPLACE_SEARCH_PRICE, MARKETPLACE_WALLET, {
+        input: { query: 'string (required)', location: 'string (default New York)', radius: 'number (default 25)', min_price: 'number (optional)', max_price: 'number (optional)' },
+        output: '{ results: MarketplaceListing[], meta }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, MARKETPLACE_WALLET, MARKETPLACE_SEARCH_PRICE);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const query = c.req.query('query');
+  if (!query) return c.json({ error: 'Missing required parameter: query' }, 400);
+
+  const location = c.req.query('location') || 'New York';
+  const radius = Math.min(Math.max(parseInt(c.req.query('radius') || '25') || 25, 1), 100);
+  const minPrice = c.req.query('min_price') ? parseInt(c.req.query('min_price')!) : undefined;
+  const maxPrice = c.req.query('max_price') ? parseInt(c.req.query('max_price')!) : undefined;
+
+  try {
+    const { searchMarketplace } = await import('./scrapers/facebook-marketplace-scraper');
+    const result = await searchMarketplace(query, location, radius, minPrice, maxPrice);
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json({
+      ...result,
+      payment: { txHash: payment.txHash, network: payment.network, amount: verification.amount, settled: true },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Marketplace search failed', message: err?.message || String(err) }, 502);
+  }
+});
+
+serviceRouter.get('/marketplace/listing/:id', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/marketplace/listing/:id',
+      'Get Facebook Marketplace listing details by ID', MARKETPLACE_DETAIL_PRICE, MARKETPLACE_WALLET, {
+        input: { id: 'string (URL path)' },
+        output: '{ listing: MarketplaceListing, description }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, MARKETPLACE_WALLET, MARKETPLACE_DETAIL_PRICE);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const listingId = c.req.param('id');
+
+  try {
+    const { getMarketplaceListing } = await import('./scrapers/facebook-marketplace-scraper');
+    const result = await getMarketplaceListing(listingId);
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json({
+      listing: result,
+      payment: { txHash: payment.txHash, network: payment.network, amount: verification.amount, settled: true },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'Listing fetch failed', message: err?.message || String(err) }, 502);
+  }
+});
+
+serviceRouter.get('/marketplace/categories', async (c) => {
+  const location = c.req.query('location') || 'New York';
+  try {
+    const { getMarketplaceCategories } = await import('./scrapers/facebook-marketplace-scraper');
+    return c.json(await getMarketplaceCategories(location));
+  } catch (err: any) {
+    return c.json({ error: 'Failed to fetch categories', message: err?.message || String(err) }, 502);
+  }
+});
+
+serviceRouter.get('/marketplace/new', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/marketplace/new',
+      'Facebook Marketplace New Listings Monitor — listings posted within time window',
+      MARKETPLACE_SEARCH_PRICE, MARKETPLACE_WALLET, {
+        input: { query: 'string (required)', location: 'string (default New York)', since: 'string (default 1h, e.g. 1h, 24h, 7d)' },
+        output: '{ results: MarketplaceListing[], meta }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, MARKETPLACE_WALLET, MARKETPLACE_SEARCH_PRICE);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const query = c.req.query('query');
+  if (!query) return c.json({ error: 'Missing required parameter: query' }, 400);
+
+  const location = c.req.query('location') || 'New York';
+  const since = c.req.query('since') || '1h';
+
+  // Parse since into hours
+  const sinceMatch = since.match(/(\d+)(h|d)/i);
+  const sinceHours = sinceMatch ? parseInt(sinceMatch[1]) * (sinceMatch[2].toLowerCase() === 'd' ? 24 : 1) : 1;
+
+  try {
+    const { monitorNewListings } = await import('./scrapers/facebook-marketplace-scraper');
+    const result = await monitorNewListings(query, location, sinceHours);
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json({
+      ...result,
+      meta: { ...result.meta, since_hours: sinceHours },
+      payment: { txHash: payment.txHash, network: payment.network, amount: verification.amount, settled: true },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'New listings monitor failed', message: err?.message || String(err) }, 502);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ─── MOBILE AD VERIFICATION API (Bounty #53) ─────────
+// ═══════════════════════════════════════════════════════
+
+const AD_VERIFICATION_PRICE = 0.03;
+const AD_WALLET = '6eUdVwsPArTxwVqEARYGCh4S2qwW2zCs7jSEDRpxydnv';
+
+serviceRouter.get('/ad-verification/run', async (c) => {
+  const payment = extractPayment(c);
+  if (!payment) {
+    return c.json(build402Response('/api/ad-verification/run',
+      'Mobile Ad Verification & Creative Intelligence — capture Google search ads, display ads, and advertiser data',
+      AD_VERIFICATION_PRICE, AD_WALLET, {
+        input: {
+          type: '"search_ads" | "display_ads" | "advertiser"',
+          query: 'string (for search_ads)',
+          url: 'string (for display_ads)',
+          domain: 'string (for advertiser)',
+          country: 'string (default US)',
+        },
+        output: '{ type, ads: AdInfo[], organic_count, total_ads, ad_positions, proxy, payment }',
+      }), 402);
+  }
+
+  const verification = await verifyPayment(payment, AD_WALLET, AD_VERIFICATION_PRICE);
+  if (!verification.valid) return c.json({ error: 'Payment verification failed', reason: verification.error }, 402);
+
+  const type = c.req.query('type') || 'search_ads';
+  const country = c.req.query('country') || 'US';
+
+  if (!['search_ads', 'display_ads', 'advertiser'].includes(type)) {
+    return c.json({ error: 'Invalid type. Use: search_ads, display_ads, or advertiser' }, 400);
+  }
+
+  try {
+    const { captureSearchAds, captureDisplayAds, lookupAdvertiser } = await import('./scrapers/ad-verification-scraper');
+
+    let result;
+    if (type === 'search_ads') {
+      const query = c.req.query('query') || 'best vpn';
+      result = await captureSearchAds(query, country);
+    } else if (type === 'display_ads') {
+      const url = c.req.query('url');
+      if (!url) return c.json({ error: 'Missing url parameter for display_ads type' }, 400);
+      result = await captureDisplayAds(url, country);
+    } else {
+      const domain = c.req.query('domain');
+      if (!domain) return c.json({ error: 'Missing domain parameter for advertiser type' }, 400);
+      result = await lookupAdvertiser(domain, country);
+    }
+
+    result.payment = {
+      txHash: payment.txHash,
+      network: payment.network,
+      amount: verification.amount ?? 0,
+      verified: true,
+    };
+
+    c.header('X-Payment-Settled', 'true');
+    c.header('X-Payment-TxHash', payment.txHash);
+
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ error: 'Ad verification failed', message: err?.message || String(err) }, 502);
+  }
+});
